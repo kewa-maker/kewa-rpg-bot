@@ -1,0 +1,87 @@
+import os
+import time
+import telebot
+from google import genai
+
+# Читаем ключи из защищенных настроек Render
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_KEY")
+
+bot = telebot.TeleBot(BOT_TOKEN)
+client = genai.Client(api_key=GEMINI_KEY)
+
+user_states = {}
+user_inventories = {}
+
+@bot.message_handler(commands=['start'])
+def start_cmd(message):
+    chat_id = message.chat.id
+    user_states[chat_id] = {"state": "waiting_name"}
+    user_inventories[chat_id] = []
+    print(f"[LOG] Новый игрок {chat_id} запустил /start")
+    bot.send_message(chat_id, "Привет! Как тебя зовут?")
+
+@bot.message_handler(content_types=['text'])
+def handle_message(message):
+    chat_id = message.chat.id
+    text = message.text.strip()
+    
+    if chat_id not in user_states:
+        user_states[chat_id] = {"state": "waiting_name"}
+        bot.send_message(chat_id, "Напиши /start для начала игры.")
+        return
+
+    state = user_states[chat_id].get("state")
+
+    if state == "waiting_name":
+        user_states[chat_id]["name"] = text
+        user_states[chat_id]["state"] = "waiting_class"
+        bot.send_message(chat_id, f"Выбери класс:\n1. Воин\n2. Маг\n3. Вор")
+
+    elif state == "waiting_class":
+        user_states[chat_id]["choise"] = text
+        user_states[chat_id]["state"] = "playing"
+        bot.send_message(chat_id, f"Начало истории...")
+        
+        prompt = f"Начни текстовую RPG для игрока {user_states[chat_id]['name']} (класс: {text}). Напиши ТОЛЬКО ОДНО короткое предложение описывающее ситуацию. Не предлагай вариантов действий."
+        generate_ai_response(chat_id, prompt)
+
+    elif state == "playing":
+        name = user_states[chat_id].get("name", "Игрок")
+        choise = user_states[chat_id].get("choise", "Неизвестный")
+        inventory = user_inventories.get(chat_id, [])
+
+        game_prompt = f"""
+        Игрок: {name} ({choise})
+        Инвентарь: {inventory}
+        Действие игрока: {text}
+        
+        Правила ответа:
+        1. Напиши продолжение истории строго ОДНИМ коротким предложением.
+        2. Никаких вариантов выбора или подсказок в конце. Только сюжетный факт, реагирующий на действие игрока.
+        """
+        generate_ai_response(chat_id, game_prompt)
+
+def generate_ai_response(chat_id, prompt):
+    models_to_try = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash"]
+    success = False
+    
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            if response and response.text:
+                bot.send_message(chat_id, response.text)
+                success = True
+                break
+        except Exception as e:
+            print(f"[LOG WARN] Модель {model_name} не ответила: {e}")
+            time.sleep(1)
+            
+    if not success:
+        bot.send_message(chat_id, "⚠️ Сервер перегружен, попробуй еще раз!")
+
+print("KewaNovel_bot запущен в облаке!")
+bot.infinity_polling(skip_pending=True)
